@@ -1,7 +1,8 @@
-import requests
-import pandas as pd
-from bs4 import BeautifulSoup
 from datetime import datetime
+
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 
 # Diccionario para mapear los meses en español a inglés
 meses = {
@@ -61,6 +62,8 @@ with requests.Session() as session:
                     detalle_aviso['Fecha Publicación'] = fecha_publicacion
                     datos.append(detalle_aviso)
         df = pd.DataFrame(datos)
-        df.to_csv(f'./{str(fecha_publicacion).replace("/", "-")}.csv', index=False)
+        df.to_csv(f'~/Library/CloudStorage/GoogleDrive-urrutijoaquin@gmail.com/Mi unidad/boletin_oficial.csv', index=False)
+        # df.to_csv(f'./{str(fecha_publicacion).replace("/", "-")}.csv', index=False)
+        # df.to_excel(f'./{str(fecha_publicacion).replace("/", "-")}.xlsx', index=False)
     except Exception as e:
         print(f"Error al obtener datos de la sección: {e}")
