@@ -1,13 +1,24 @@
 import os
-from datetime import datetime
+import smtplib
+from datetime import datetime, timedelta
+from email.message import EmailMessage
+from pathlib import Path
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from openai import OpenAI
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Especificar la ruta exacta del .env
+env_path = Path(__file__).parent / '.env'
+# print(f"Buscando .env en: {env_path}")
+# print(f"¿Existe el archivo? {env_path.exists()}")
 
+load_dotenv(dotenv_path=env_path, override=True)
+
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Diccionario para mapear los meses en español a inglés
 meses = {
@@ -79,30 +90,33 @@ with requests.Session() as session:
 def classify_text(text):
     """Use OpenAI to classify the text into categories."""
     prompt = f"""
-    Classify the following text as one of these categories:
-    - `Relevante`
-    - `No relevante`
+    Rank the following text from 0 to 100 based on how relevant it is to the following topic:
+    - `Relevante`: 100
+    - `No relevante`: 0
 
-    Espartina es una empresa que se dedica a la producción de cultívos tradicionales en toda el área agrícola
-    de Argentina. El texto a clasificar son resoluciones del boletín oficial de la República Argentina.
-    Relevante es toda resolución que establece normas, requisitos, regulaciones o medidas 
-    vinculadas a la producción agrícola, su transporte, comercialización o financiamiento. Incluye disposiciones 
-    de organismos estatales sobre semillas, agroquímicos, granos, transporte de mercaderías, exportaciones, 
-    importaciones, contratos rurales, precios de referencia, impuestos o aspectos ambientales y laborales 
-    que puedan impactar directa o indirectamente en la actividad de la empresa.”
+    Espartina es una empresa dedicada a la producción de cultivos tradicionales en toda el región agrícola de Argentina. 
+    Vas a clasificar textos que corresponden a resoluciones publicadas en el Boletín Oficial de la República Argentina.
 
-    Sólo marca como `Relevante`, las resoluciones que tengan un impacto económico importante y relevante para 
-    una empresa que produce principalmente: trigo, soja, maiz, maíz pisingallo, girasol, sorgo, cebada, sesamo, 
-    carinata, poroto, garbanzo y arveja. 
-    
-    Nunca marques como `Relevante` las resoluciones que hablen de Micro, Pequeñas y Medianas Empresas (MiPyMEs) 
-    o que no tengan que ver con la producción agrícola, o políticas que puedan impactar en la actividad de la empresa agropecuaria.
-    
+    Considera como "Relevante" (100 puntos) únicamente aquellas resoluciones que establecen normas, requisitos, regulaciones o medidas 
+    que impactan directa y significativamente en la producción agrícola, su transporte, comercialización o financiamiento. 
+    Esto incluye disposiciones estatales sobre semillas, agroquímicos, granos, transporte de mercaderías, exportaciones, 
+    importaciones, contratos rurales, precios de referencia, impuestos, o aspectos ambientales y laborales que puedan afectar 
+    la actividad agrícola de manera directa o indirecta.
+
+    Da la máxima puntuación (100) solo si la resolución tiene un impacto económico alto y es muy relevante para una empresa 
+    que produce principalmente: trigo, soja, maíz, maíz pisingallo, girasol, sorgo, cebada, sésamo, carinata, poroto, garbanzo y arveja.
+
+    Asigna 0 puntos si la resolución trata sobre Micro, Pequeñas y Medianas Empresas (MiPyMEs), o si no está relacionada 
+    con la producción agrícola, o si se refiere a políticas generales que no afectan de manera concreta la actividad de una empresa agropecuaria.
+
+    Sé estricto: solo asigna valores altos a resoluciones que realmente puedan modificar la operatoria, los costos, los ingresos, 
+    la regulación o el contexto de negocios de una empresa agrícola como Espartina. Si tienes dudas, asigna un valor bajo.
+
     Text: {text}
-    Only return the category name.
+    Only return a number between 0 and 100.
     """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # puedes usar otro modelo según tu plan
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -115,7 +129,7 @@ def summarize_text(text):
     Summarize the following text: {text} always in spanish.
     """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # puedes usar otro modelo según tu plan
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -128,7 +142,7 @@ def create_title(text):
     Create a meaningful title for the following text: {text}, always in spanish.
     """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # puedes usar otro modelo según tu plan
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -138,112 +152,33 @@ def create_title(text):
 # Apply classification
 df["Relevancia"] = df["Texto"].apply(classify_text)
 
-relevante_df = df.loc[df["Relevancia"] == "Relevante"]
-
+relevante_df = df[df["Relevancia"].astype(float) > 70].sort_values(by="Relevancia", ascending=False).head(5)
 relevante_df["Resumen"] = relevante_df["Texto"].apply(summarize_text)
-
 relevante_df["Titulo"] = relevante_df["Texto"].apply(create_title)
 
-relevante_df.drop(columns=["Texto", "Relevancia"]).to_excel("~/Downloads/relevante_df.xlsx", index=False)
+# Update the Excel file with the new relevant resolutions
+file_path = "resoluciones_relevantes.xlsx"
 
+sheet_name = "resoluciones_relevantes"
+out_df = relevante_df.drop(columns=["Texto"])
 
-def generar_html_email_styled(df):
-    """
-    Genera HTML estilizado para email con las resoluciones del boletín oficial
-    """
-    hoy = datetime.now().strftime('%d/%m/%Y')
-    
-    # CSS inline para compatibilidad con clientes de email
-    html_content = f"""
-    <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">
-        <h1 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">
-            Resoluciones del Boletín Oficial de la última semana
-        </h1>
-    """
-    
-    # Loop sobre las filas del DataFrame
-    for index, row in df.iterrows():
-        fecha = row['Fecha Publicación']
-        titulo = row['Titulo']
-        resumen = row['Resumen']
-        enlace = row['Enlace']
-        
-        html_content += f"""
-        <div style="margin-bottom: 30px; padding: 20px; border: 1px solid #ecf0f1; border-radius: 5px;">
-            <h2 style="color: #34495e; margin-top: 0; margin-bottom: 15px; font-size: 18px;">
-                {titulo} - {fecha}
-            </h2>
-            <p style="color: #555; line-height: 1.6; margin-bottom: 15px;">
-                {resumen}
-            </p>
-            <p style="margin-bottom: 0;">
-                <a href="{enlace}" style="color: #3498db; text-decoration: none; font-weight: bold;">
-                    📋 Ver resolución completa
-                </a>
-            </p>
-        </div>
-        """
-    
-    html_content += "</div>"
-    return html_content
-
-# Usar la función con tu DataFrame
-html_email_styled = generar_html_email_styled(relevante_df)
-
-
-import smtplib
-from email.message import EmailMessage
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-# Especificar la ruta exacta del .env
-env_path = Path(__file__).parent / '.env'
-print(f"Buscando .env en: {env_path}")
-print(f"¿Existe el archivo? {env_path.exists()}")
-
-load_dotenv(dotenv_path=env_path, override=True)
-
-email_from = os.getenv('EMAIL_FROM')
-print(f"EMAIL_FROM: {email_from}")
-
-
-test = True
-
-
-if test:
-    email_to = os.getenv('EMAIL_FROM')
+# Create file if it doesn't exist
+if not Path(file_path).exists():
+    out_df.to_excel(file_path, index=False, sheet_name=sheet_name)
 else:
-    email_to = os.getenv('EMAIL_TO')
-
-print(f"EMAIL_TO: {email_to}")
-
-
-def enviar_email(mail_to, mail_body):
-    msg = EmailMessage()
-    msg["Subject"] = f"Principales resoluciones del Boletín Oficial - {hoy}"
-    msg["From"] = os.getenv("EMAIL_FROM")
-    
-    # Handle list of recipients
-    if isinstance(mail_to, list):
-        msg["To"] = ", ".join(mail_to)
-    else:
-        msg["To"] = mail_to
-    
-    # Set plain text fallback and HTML content
-    msg.set_content("Este email requiere un cliente que soporte HTML.")
-    msg.add_alternative(mail_body, subtype='html')
-
-    # Outlook SMTP con starttls()
-    with smtplib.SMTP("smtp-mail.outlook.com", 587) as smtp:
-        smtp.starttls()
-        smtp.login(os.getenv("EMAIL_FROM"), os.getenv("EMAIL_PASSWORD"))
-        smtp.send_message(msg)
-
-
-
-try:
-    enviar_email(email_to, html_email_styled)
-    print(f"✅ Resumen del boletin oficial enviado!")
-except Exception as e:
-    print(f"Ocurrió un error:\n{e}")
+    # Append to existing sheet (or create it if missing)
+    with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="overlay") as writer:
+        if sheet_name in writer.book.sheetnames:
+            ws = writer.book[sheet_name]
+            startrow = ws.max_row  # next empty row (compatible with pandas startrow)
+            # Append without header to avoid duplicating column names
+            out_df.to_excel(
+                writer,
+                index=False,
+                sheet_name=sheet_name,
+                startrow=startrow,
+                header=False,
+            )
+        else:
+            # Sheet does not exist yet: write normally with header
+            out_df.to_excel(writer, index=False, sheet_name=sheet_name)
