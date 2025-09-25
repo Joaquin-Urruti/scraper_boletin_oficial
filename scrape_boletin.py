@@ -20,6 +20,7 @@ load_dotenv(dotenv_path=env_path, override=True)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+
 # Diccionario para mapear los meses en español a inglés
 meses = {
     'Enero': 'January',
