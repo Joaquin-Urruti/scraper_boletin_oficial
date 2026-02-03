@@ -3,25 +3,59 @@ import smtplib
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
+from pydantic import BaseModel, Field
 
-# Especificar la ruta exacta del .env
+# Load environment variables
 env_path = Path(__file__).parent / '.env'
-# print(f"Buscando .env en: {env_path}")
-# print(f"¿Existe el archivo? {env_path.exists()}")
-
 load_dotenv(dotenv_path=env_path, override=True)
-
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Pydantic models for structured outputs
+class RelevanceClassification(BaseModel):
+    """Model for text relevance classification"""
+    relevance_score: int = Field(
+        ..., 
+        ge=0, 
+        le=100,
+        description="Relevance score from 0 to 100 for agricultural production relevance"
+    )
+    reasoning: str = Field(
+        ...,
+        description="Brief explanation of why this score was assigned"
+    )
 
-# Diccionario para mapear los meses en español a inglés
+class TextSummary(BaseModel):
+    """Model for text summarization"""
+    summary: str = Field(
+        ...,
+        description="Concise summary of the text in Spanish"
+    )
+    key_points: list[str] = Field(
+        ...,
+        description="List of key points from the text"
+    )
+
+class TitleGeneration(BaseModel):
+    """Model for title creation"""
+    title: str = Field(
+        ...,
+        max_length=150,
+        description="Meaningful title for the text in Spanish"
+    )
+    category: str = Field(
+        ...,
+        description="Category or type of regulation (e.g., 'Exportación', 'Semillas', 'Impuestos')"
+    )
+
+# Dictionary to map Spanish months to English
 meses = {
     'Enero': 'January',
     'Febrero': 'February',
@@ -40,14 +74,14 @@ meses = {
 hoy = datetime.now().strftime('%d/%m/%Y')
 
 def obtener_fecha_publicacion(soup):
-    """Función para obtener la fecha de publicación"""
+    """Function to get publication date"""
     fecha_texto = soup.find('div', class_='margin-bottom-20 fecha-ultima-edicion').find_all('h6')[1].text.strip()
     for mes_es, mes_en in meses.items():
         fecha_texto = fecha_texto.replace(mes_es, mes_en)
     return datetime.strptime(fecha_texto, '%d de %B de %Y').strftime('%d/%m/%Y')
 
 def obtener_detalles_aviso(url_detalle):
-    """Función para obtener detalles de un aviso"""
+    """Function to get notice details"""
     try:
         response_detalle = session.get(url_detalle)
         response_detalle.raise_for_status()
@@ -59,6 +93,104 @@ def obtener_detalles_aviso(url_detalle):
         print(f"Error al obtener detalles del aviso: {e}")
         return None
 
+def classify_text(text: str) -> dict:
+    """Use OpenAI structured output to classify the text into categories."""
+    prompt = f"""
+    Rank the following text from 0 to 100 based on how relevant it is to agricultural production.
+
+    Espartina is a company dedicated to traditional crop production throughout Argentina's agricultural region.
+    You will classify texts corresponding to resolutions published in the Official Gazette of the Argentine Republic.
+
+    Consider as "Relevant" (100 points) only those resolutions that establish norms, requirements, regulations 
+    or measures that directly and significantly impact agricultural production, transport, commercialization or financing.
+    This includes state provisions on seeds, agrochemicals, grains, merchandise transport, exports, imports, 
+    rural contracts, reference prices, taxes, or environmental and labor aspects that may directly or indirectly 
+    affect agricultural activity.
+
+    Give maximum score (100) only if the resolution has high economic impact and is highly relevant for a company 
+    that mainly produces: wheat, soy, corn, popcorn corn, sunflower, sorghum, barley, sesame, carinata, beans, 
+    chickpeas and peas.
+
+    Assign 0 points if the resolution deals with Micro, Small and Medium Enterprises (MSMEs), or if it's not 
+    related to agricultural production, or if it refers to general policies that don't concretely affect 
+    the activity of an agricultural company.
+
+    Be strict: only assign high values to resolutions that can really modify operations, costs, income, 
+    regulation or business context of an agricultural company like Espartina.
+
+    Text: {text}
+    """
+    
+    try:
+        response = client.beta.chat.completions.parse(
+            model="gpt-4o-2024-08-06",
+            messages=[{"role": "user", "content": prompt}],
+            response_format=RelevanceClassification,
+            temperature=0
+        )
+        
+        result = response.choices[0].message.parsed
+        return {
+            "relevance_score": result.relevance_score,
+            "reasoning": result.reasoning
+        }
+    except Exception as e:
+        print(f"Error in classification: {e}")
+        return {"relevance_score": 0, "reasoning": "Error in processing"}
+
+def summarize_text(text: str) -> dict:
+    """Use OpenAI structured output to summarize the text."""
+    prompt = f"""
+    Summarize the following regulatory text in Spanish, focusing on key aspects relevant to agricultural production.
+    Provide a concise summary and identify the main points.
+
+    Text: {text}
+    """
+    
+    try:
+        response = client.beta.chat.completions.parse(
+            model="gpt-4o-2024-08-06",
+            messages=[{"role": "user", "content": prompt}],
+            response_format=TextSummary,
+            temperature=0
+        )
+        
+        result = response.choices[0].message.parsed
+        return {
+            "summary": result.summary,
+            "key_points": result.key_points
+        }
+    except Exception as e:
+        print(f"Error in summarization: {e}")
+        return {"summary": "Error en resumen", "key_points": []}
+
+def create_title(text: str) -> dict:
+    """Use OpenAI structured output to create a title for the text."""
+    prompt = f"""
+    Create a meaningful title and categorize the following regulatory text in Spanish.
+    The title should be descriptive and indicate the main topic of the regulation.
+
+    Text: {text}
+    """
+    
+    try:
+        response = client.beta.chat.completions.parse(
+            model="gpt-4o-2024-08-06",
+            messages=[{"role": "user", "content": prompt}],
+            response_format=TitleGeneration,
+            temperature=0
+        )
+        
+        result = response.choices[0].message.parsed
+        return {
+            "title": result.title,
+            "category": result.category
+        }
+    except Exception as e:
+        print(f"Error in title generation: {e}")
+        return {"title": "Título no disponible", "category": "Sin categoría"}
+
+# Web scraping section
 url_base = 'https://www.boletinoficial.gob.ar'
 url_seccion = f'{url_base}/seccion/primera'
 
@@ -80,106 +212,64 @@ with requests.Session() as session:
                 if detalle_aviso:
                     detalle_aviso['Fecha Publicación'] = fecha_publicacion
                     datos.append(detalle_aviso)
+                    
         df = pd.DataFrame(datos)
-        # df.to_csv(f'~/Library/CloudStorage/GoogleDrive-urrutijoaquin@gmail.com/Mi unidad/boletin_oficial.csv', index=False)
-        # df.to_csv(f'./{str(fecha_publicacion).replace("/", "-")}.csv', index=False)
-        # df.to_excel(f'./{str(fecha_publicacion).replace("/", "-")}.xlsx', index=False)
+        
     except Exception as e:
         print(f"Error al obtener datos de la sección: {e}")
 
+# Apply structured classifications
+print("Aplicando clasificaciones con structured outputs...")
 
-def classify_text(text):
-    """Use OpenAI to classify the text into categories."""
-    prompt = f"""
-    Rank the following text from 0 to 100 based on how relevant it is to the following topic:
-    - `Relevante`: 100
-    - `No relevante`: 0
+# Apply classification and extract structured data
+classification_results = df["Texto"].apply(classify_text)
+df["Relevancia"] = classification_results.apply(lambda x: x["relevance_score"])
+df["Razonamiento"] = classification_results.apply(lambda x: x["reasoning"])
 
-    Espartina es una empresa dedicada a la producción de cultivos tradicionales en toda el región agrícola de Argentina. 
-    Vas a clasificar textos que corresponden a resoluciones publicadas en el Boletín Oficial de la República Argentina.
-
-    Considera como "Relevante" (100 puntos) únicamente aquellas resoluciones que establecen normas, requisitos, regulaciones o medidas 
-    que impactan directa y significativamente en la producción agrícola, su transporte, comercialización o financiamiento. 
-    Esto incluye disposiciones estatales sobre semillas, agroquímicos, granos, transporte de mercaderías, exportaciones, 
-    importaciones, contratos rurales, precios de referencia, impuestos, o aspectos ambientales y laborales que puedan afectar 
-    la actividad agrícola de manera directa o indirecta.
-
-    Da la máxima puntuación (100) solo si la resolución tiene un impacto económico alto y es muy relevante para una empresa 
-    que produce principalmente: trigo, soja, maíz, maíz pisingallo, girasol, sorgo, cebada, sésamo, carinata, poroto, garbanzo y arveja.
-
-    Asigna 0 puntos si la resolución trata sobre Micro, Pequeñas y Medianas Empresas (MiPyMEs), o si no está relacionada 
-    con la producción agrícola, o si se refiere a políticas generales que no afectan de manera concreta la actividad de una empresa agropecuaria.
-
-    Sé estricto: solo asigna valores altos a resoluciones que realmente puedan modificar la operatoria, los costos, los ingresos, 
-    la regulación o el contexto de negocios de una empresa agrícola como Espartina. Si tienes dudas, asigna un valor bajo.
-
-    Text: {text}
-    Only return a number between 0 and 100.
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return response.choices[0].message.content.strip()
-
-
-def summarize_text(text):
-    """Use OpenAI to summarize the text."""
-    prompt = f"""
-    Summarize the following text: {text} always in spanish.
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return response.choices[0].message.content.strip()
-
-
-def create_title(text):
-    """Use OpenAI to create a title for the text."""
-    prompt = f"""
-    Create a meaningful title for the following text: {text}, always in spanish.
-    """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return response.choices[0].message.content.strip()
-
-
-# Apply classification
-df["Relevancia"] = df["Texto"].apply(classify_text)
-
+# Filter relevant documents
 relevante_df = df[df["Relevancia"].astype(float) > 70].sort_values(by="Relevancia", ascending=False).head(5)
-relevante_df["Resumen"] = relevante_df["Texto"].apply(summarize_text)
-relevante_df["Titulo"] = relevante_df["Texto"].apply(create_title)
 
-# Update the Excel file with the new relevant resolutions
-file_path = "resoluciones_relevantes.xlsx"
+if not relevante_df.empty:
+    # Apply summarization
+    summary_results = relevante_df["Texto"].apply(summarize_text)
+    relevante_df["Resumen"] = summary_results.apply(lambda x: x["summary"])
+    relevante_df["Puntos_Clave"] = summary_results.apply(lambda x: "; ".join(x["key_points"]))
 
-sheet_name = "resoluciones_relevantes"
-out_df = relevante_df.drop(columns=["Texto"])
+    # Apply title generation
+    title_results = relevante_df["Texto"].apply(create_title)
+    relevante_df["Titulo_Generado"] = title_results.apply(lambda x: x["title"])
+    relevante_df["Categoria"] = title_results.apply(lambda x: x["category"])
 
-# Create file if it doesn't exist
-if not Path(file_path).exists():
-    out_df.to_excel(file_path, index=False, sheet_name=sheet_name)
+    # Prepare output dataframe
+    out_df = relevante_df[[
+        'Fecha Publicación', 'Titulo_Generado', 'Categoria', 'Relevancia', 
+        'Razonamiento', 'Resumen', 'Puntos_Clave', 'Enlace'
+    ]]
+
+    # Save to Excel
+    file_path = "resoluciones_relevantes.xlsx"
+    sheet_name = "resoluciones_relevantes"
+
+    if not Path(file_path).exists():
+        out_df.to_excel(file_path, index=False, sheet_name=sheet_name)
+        print(f"Archivo creado: {file_path}")
+    else:
+        with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="overlay") as writer:
+            if sheet_name in writer.book.sheetnames:
+                ws = writer.book[sheet_name]
+                startrow = ws.max_row
+                out_df.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name=sheet_name,
+                    startrow=startrow,
+                    header=False,
+                )
+                print(f"Datos añadidos al archivo existente: {file_path}")
+            else:
+                out_df.to_excel(writer, index=False, sheet_name=sheet_name)
+                print(f"Nueva hoja creada en: {file_path}")
+
+    print(f"Procesadas {len(relevante_df)} resoluciones relevantes")
 else:
-    # Append to existing sheet (or create it if missing)
-    with pd.ExcelWriter(file_path, engine="openpyxl", mode="a", if_sheet_exists="overlay") as writer:
-        if sheet_name in writer.book.sheetnames:
-            ws = writer.book[sheet_name]
-            startrow = ws.max_row  # next empty row (compatible with pandas startrow)
-            # Append without header to avoid duplicating column names
-            out_df.to_excel(
-                writer,
-                index=False,
-                sheet_name=sheet_name,
-                startrow=startrow,
-                header=False,
-            )
-        else:
-            # Sheet does not exist yet: write normally with header
-            out_df.to_excel(writer, index=False, sheet_name=sheet_name)
+    print("No se encontraron resoluciones relevantes con puntuación > 70")
