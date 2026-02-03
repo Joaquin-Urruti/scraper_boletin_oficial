@@ -164,3 +164,7 @@ dmypy.json
 .claude/
 AGENT.md
 AGENTS.md
+
+prefect_example.py
+# scrape_boletin_prefect.py
+# send_weekly_report_prefect.py
