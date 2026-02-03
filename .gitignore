@@ -142,3 +142,8 @@ Desktop.ini
 
 # PDF outputs
 *.pdf
+
+# Output directory (logs, data)
+output/
+!output/logs/.gitkeep
+!output/data/.gitkeep
